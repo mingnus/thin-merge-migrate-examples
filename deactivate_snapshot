@@ -1,0 +1,29 @@
+#!/bin/bash
+
+source ./dev-manager.sh
+
+CMD=$(basename "$(readlink -f "$0")")
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "help" -- "$@") || exit 1
+eval set -- ${OPTIONS}
+
+while true; do
+    case "$1" in
+    -h | --help)
+        echo "${CMD} <SNAPSHOT_ALIAS>"
+        exit 0
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ $# -ne 1 ]; then
+    echo "Err: One or more required arguments were not provided" >&2
+    exit 1
+fi
+
+snap_alias=$1
+deactivate_thin_alias "${snap_alias}"

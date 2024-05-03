@@ -1,0 +1,127 @@
+#!/bin/bash
+
+source ./lvm-utils.sh
+source ./lvmthin-utils.sh
+
+run_thin_merge() {
+    input_dev="$1"
+    output_dev="$2"
+    origin_id="$3"
+    snap_id="$4"
+    thin_merge -i "${input_dev}" -o "${output_dev}" --origin "${origin_id}" --snapshot "${snap_id}"
+}
+
+# TODO: wrap these steps into a single lvconvert command?
+lvconvert_merge_snapshots() {
+    local vg_name="$1"
+    local pool_lv="$2"
+    local origin_id="$3"
+    local snap_id="$4"
+
+    local meta_lv="${pool_lv}_tmeta"
+    if ! lvm_activate_hidden_lv "${vg_name}" "${meta_lv}"; then
+        echo "Failed to activate component LV ${vg_name}/${meta_lv}" >&2
+        return 1
+    fi
+
+    local meta_size
+    if ! meta_size=$(lvm_get_lv_size "${vg_name}" "${meta_lv}"); then
+        echo "Failed to get logical volume size ${vg_name}/${meta_lv}" >&2
+        return 1
+    fi
+
+    local spare_lv="${pool_lv}_meta_bak"
+    if ! lvm_create_lv "${vg_name}" "${spare_lv}" "${meta_size}"; then
+        echo "Failed to create metadata spare LV" >&2
+        return 1
+    fi
+
+    meta_path="/dev/mapper/${vg_name}-${meta_lv}"
+    spare_path="/dev/mapper/${vg_name}-${spare_lv}"
+    if ! run_thin_merge "${meta_path}" "${spare_path}" "${origin_id}" "${snap_id}"; then
+        echo "Failed to run thin_merge" >&2
+        return 1
+    fi
+
+    if ! lvm_deactivate_lv "${vg_name}" "${meta_lv}"; then
+        echo "Failed to deactivate thin-pool metadata LV" >&2
+        return 1
+    fi
+
+    if ! lvmthin_swap_poolmetadata "${vg_name}" "${pool_lv}" "${spare_lv}"; then
+        echo "Failed to swap pool metadata" >&2
+        return 1
+    fi
+
+    echo "${spare_lv}"
+}
+
+merge_external_snapshot() {
+    local vg_name="$1"
+    local dest_lv="$2"
+    local snap_id="$3"
+
+    local pool_lv
+    if ! pool_lv=$(lvmthin_get_pool_lv ${vg_name} ${dest_lv}); then
+        return 1
+    fi
+
+    if ! lvmthin_deactivate_pool "${vg_name}" "${pool_lv}"; then
+        echo "Failed to deactivate thin-pool ${vg_name}/${pool_lv}" >&2
+        return 1
+    fi
+
+    local origin_id
+    if ! origin_id=$(lvmthin_get_dev_id "${vg_name}" "${dest_lv}"); then
+        echo "Failed to get the device id for thin ${vg_name}/${dest_lv}" >&2
+        return 1
+    fi
+    local meta_spare
+    if ! meta_spare=$(lvconvert_merge_snapshots "${vg_name}" "${pool_lv}" "${origin_id}" "${snap_id}"); then
+        return 1
+    fi
+
+    if ! lvm_activate_lv "${vg_name}" "${pool_lv}" || ! lvm_activate_lv "${vg_name}" "${dest_lv}"; then
+        # Revert thin-pool metadata on error
+        lvm_deactivate_lv "${vg_name}" "${pool_lv}"
+        lvmthin_swap_poolmetadata "${vg_name}" "${pool_lv}" "${meta_spare}"
+        return 1
+    fi
+}
+
+CMD=$(basename "$(readlink -f "$0")")
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "snap-id:" --long "help" -- "$@") || exit 1
+eval set -- ${OPTIONS}
+
+snap_id=""
+while true; do
+    case "$1" in
+    -h | --help)
+        echo "${CMD} <VG>/<ORIGIN_LV> --snap-id <THIN_ID>"
+        exit 0
+        ;;
+    --snap-id)
+        snap_id="$2"
+        shift
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ -z ${snap_id} ] || [ $# -ne 1 ]; then
+    echo "One or more required arguments were not provided" >&2
+    exit 1
+fi
+
+snap_lv=$1
+names=()
+if ! names=($(lvm_parse_display_name ${snap_lv})); then
+    echo "Logical volume ${snap_lv} not found" >&2
+    exit 1
+fi
+
+merge_external_snapshot "${names[0]}" "${names[1]}" "${snap_id}"

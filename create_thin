@@ -1,0 +1,44 @@
+#!/bin/bash
+
+source ./dm-utils.sh
+source ./dm-thin-utils.sh
+source ./lvm-utils.sh
+
+CMD=$(basename "$(readlink -f "$0")")
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "dev-id:" --long "help" -- "$@") || exit 1
+eval set -- ${OPTIONS}
+
+dev_id=""
+while true; do
+    case "$1" in
+    -h | --help)
+        echo "${CMD} <VG>/<POOL_LV> --dev-id <THIN_ID>"
+        exit 0
+        ;;
+    --dev-id)
+        dev_id="$2"
+        shift
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ -z ${dev_id} ] || [ $# -ne 1 ]; then
+    echo "One or more required arguments were not provided" >&2
+    exit 1
+fi
+
+pool_lv=$1
+names=()
+if ! names=($(lvm_parse_display_name "${pool_lv}")); then
+    echo "Logical volume ${pool_lv} not found" >&2
+    exit 1
+fi
+
+# assume that the pool's transaction-id is non-zero, i.e., the -tpool layer exists.
+pool_dev="${names[0]}-${names[1]}-tpool"
+thinpool_create_thin "${pool_dev}" "${dev_id}"

@@ -1,0 +1,61 @@
+#!/bin/bash
+
+source ./dm-utils.sh
+source ./dm-thin-utils.sh
+source ./lvm-utils.sh
+
+CMD=$(basename "$(readlink -f "$0")")
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "name:" --long "dev-id:" --long "origin:" --long "help" -- "$@") || exit 1
+eval set -- ${OPTIONS}
+
+name=""
+dev_id=""
+origin_name=""
+while true; do
+    case "$1" in
+    -h | --help)
+        echo "${CMD} <VG>/<POOL_LV> --name <NAME> --dev-id <THIN_ID> --origin <DM_NAME>"
+        exit 0
+        ;;
+    --name)
+        name="$2"
+        shift
+        ;;
+    --dev-id)
+        dev_id="$2"
+        shift
+        ;;
+    --origin)
+        origin_name="$2"
+        shift
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ -z ${name} ] || [ -z ${dev_id} ] || [ -z ${origin_name} ] || [ $# -ne 1 ]; then
+    echo "One or more required arguments were not provided" >&2
+    exit 1
+fi
+
+pool_lv=$1
+names=()
+if ! names=($(lvm_parse_display_name "${pool_lv}")); then
+    echo "Logical volume ${pool_lv} not found" >&2
+    exit 1
+fi
+
+origin_path="/dev/mapper/${origin_name}"
+origin_size=0
+if ! origin_size=$(blockdev_getsz "${origin_path}") || [ ${origin_size} -eq 0 ]; then
+    echo "Failed to get the size of the external origin ${origin_path}" >&2
+    exit 1
+fi
+
+# assume that the pool's transaction-id is non-zero, i.e., the -tpool layer exists.
+pool_dev="${names[0]}-${names[1]}-tpool"
+dm_activate_external_snapshot "${name}" "${dev_id}" "${origin_size}" "${pool_dev}" "${origin_path}"

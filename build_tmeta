@@ -1,0 +1,126 @@
+#!/bin/bash
+
+source ./dm-utils.sh
+source ./dm-thin-utils.sh
+source ./lvm-utils.sh
+
+# returns the estimated metadata size in sectors
+estimate_metadata_size_for_thin() {
+    local vg_name="$1"
+    local snap_lv="$2"
+    local snap_dev="${vg_name}-${snap_lv}"
+
+    local thinpool_dev
+    if ! thinpool_dev=$(thin_get_pool_name "${snap_dev}"); then
+        return 1
+    fi
+
+    local bs
+    local metadata_size
+    local mapped_sectors
+    if ! bs=$(thinpool_get_block_size "${thinpool_dev}"); then
+        return 1
+    fi
+    if ! mapped_sectors=$(thin_get_mapped_sectors "${snap_dev}"); then
+        return 1
+    fi
+    if ! metadata_size=$(thinpool_estimate_metadata_size "${bs}" "${mapped_sectors}"); then
+        return 1
+    fi
+
+    # enlarge the value to ensure there's capacity for space maps
+    echo $((${metadata_size} * 5 / 4))
+}
+
+create_metadata_lv() {
+    local vg_name=$1
+    local snap_lv=$2
+    local output_lv=$3
+
+    local metadata_size
+    if ! metadata_size=$(estimate_metadata_size_for_thin "${vg_name}" "${snap_lv}"); then
+        return 1
+    fi
+    lvm_create_lv "${vg_name}" "${output_lv}" "${metadata_size}s"
+}
+
+dump_data_mappings() {
+    local vg_name=$1
+    local snap_lv=$2
+    local output_lv=$3
+
+    local snap_dev="${vg_name}-${snap_lv}"
+    local snap_id
+    if ! snap_id=$(thin_get_dev_id "${snap_dev}"); then
+        return 1
+    fi
+
+    local thinpool_dev
+    if ! thinpool_dev=$(thin_get_pool_name "${snap_dev}"); then
+        return 1
+    fi
+
+    local output_dev="${vg_name}-${output_lv}"
+    local output_path="/dev/mapper/${output_dev}"
+    thinpool_dump_mappings "${thinpool_dev}" "${snap_id}" "${output_path}"
+}
+
+build_metadata_for_snapshot() {
+    local vg_name=$1
+    local snap_lv=$2
+    local output_lv=$3
+
+    if ! lvm_activate_lv "${vg_name}" "${snap_lv}"; then
+        return 1
+    fi
+
+    if ! create_metadata_lv "${vg_name}" "${snap_lv}" "${output_lv}"; then
+        echo "Failed to create LV \"${output_lv}\" in VG \"${vg_name}\"" >&2
+        return 1
+    fi
+
+    if ! dump_data_mappings "${vg_name}" "${snap_lv}" "${output_lv}"; then
+        echo "Failed to dump data mapapings from \"${vg_name}/${snap_lv}\" into \"${output_lv}\"" >&2
+        lvm_remove_lv "${vg_name}" "${output_lv}"
+        return 1
+    fi
+
+    lvm_deactivate_lv "${vg_name}" "${output_lv}"
+}
+
+CMD=$(basename "$(readlink -f "$0")")
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "name:" --long "help" -- "$@") || exit 1
+eval set -- ${OPTIONS}
+
+output_lv=""
+while true; do
+    case "$1" in
+    -h | --help)
+        echo "${CMD} <VG>/<SNAP_LV> --name <NAME_FOR_TMETA_LV>"
+        exit 0
+        ;;
+    --name)
+        output_lv="$2"
+        shift
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ -z ${output_lv} ] || [ $# -ne 1 ]; then
+    echo "One or more required arguments were not provided" >&2
+    exit 1
+fi
+
+snap_lv=$1
+names=()
+if ! names=($(lvm_parse_display_name ${snap_lv})); then
+    echo "Logical volume ${snap_lv} not found" >&2
+    exit 1
+fi
+
+build_metadata_for_snapshot "${names[0]}" "${names[1]}" "${output_lv}"

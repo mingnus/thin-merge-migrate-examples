@@ -1,0 +1,40 @@
+#!/bin/bash
+
+source ./dev-manager.sh
+
+CMD=$(basename "$(readlink -f "$0")")
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "metadata:" --long "help" -- "$@") || exit 1
+eval set -- ${OPTIONS}
+
+temp_meta_lv=""
+while true; do
+    case "$1" in
+    -h | --help)
+        echo "${CMD} <VG>/<SNAP_LV> --metadata <META_LV>"
+        exit 0
+        ;;
+    --metadata)
+        temp_meta_lv="$2"
+        shift
+        ;;
+    --)
+        shift
+        break
+        ;;
+    esac
+    shift
+done
+
+if [ -z ${temp_meta_lv} ] || [ $# -ne 1 ]; then
+    echo "One or more required arguments were not provided" >&2
+    exit 1
+fi
+
+snap_lv=$1
+names=()
+if ! names=($(lvm_parse_display_name ${snap_lv})); then
+    echo "Logical volume ${snap_lv} not found" >&2
+    exit 1
+fi
+
+activate_thin_alias "${names[0]}" "${names[1]}" "${temp_meta_lv}"
