@@ -5,21 +5,23 @@ source ./dm-thin-utils.sh
 source ./lvm-utils.sh
 source ./lvmthin-utils.sh
 
-prepare_dest_lv() {
+check_dest_lv() {
     local vg_name="$1"
-    local dest_pool_lv="$2"
-    local dest_thin_lv="$3"
-    local src_size="$4"
+    local dest_lv="$2"
+    local src_size="$3"
 
     local dest_type
-    if dest_type=$(lvm_get_target_type "${vg_name}" "${dest_thin_lv}"); then
+    if dest_type=$(lvm_get_target_type "${vg_name}" "${dest_lv}"); then
         if [ "${dest_type}" != "thin" ]; then
+	    echo "Logical volume ${dest_lv} is not a thin" >&2
             return 1
         fi
-        if [ $(lvm_get_lv_size "${vg_name}" "${dest_thin_lv}") != ${src_size} ]; then
+        if [ $(lvm_get_lv_size "${vg_name}" "${dest_lv}") != "${src_size}" ]; then
+	    echo "The size of logical volume ${dest_lv} does not match ${src_size}" >&2
             return 1
         fi
-    elif ! lvmthin_create_thin "${vg_name}" "${dest_pool_lv}" "${dest_thin_lv}" "${src_size}"; then
+    else
+	echo "Cannot get the target type of ${dest_lv}"
         return 1
     fi
 }
@@ -47,8 +49,7 @@ thinpool_migrate_thin() {
 migrate_thin_device() {
     local src_dev="$1"
     local vg_name="$2"
-    local dest_pool_lv="$3"
-    local dest_thin_lv="$4"
+    local dest_thin_lv="$3"
 
     local src_path="/dev/mapper/${src_dev}"
     local src_size
@@ -56,38 +57,27 @@ migrate_thin_device() {
         return 1
     fi
 
-    # make sure the destination lv is a thin volume with identical size. otherwise, create a new one
-    if ! prepare_dest_lv "${vg_name}" "${dest_pool_lv}" "${dest_thin_lv}" "${src_size}"; then
+    # make sure the destination lv is a thin volume with identical size
+    if ! check_dest_lv "${vg_name}" "${dest_thin_lv}" "${src_size}"; then
 	return 1
     fi
 
+    lvm_activate_lv "${vg_name}" "${dest_thin_lv}"
+
     local dest_dev="${vg_name}-${dest_thin_lv}"
     thinpool_migrate_thin "${src_dev}" "${dest_dev}"
-    local ret=$?
-
-    if [ ${ret} -ne 0 ]; then
-        lvm_remove_lv "${vg_name}" "${dest_thin_lv}"
-    fi
-
-    lvm_deactivate_lv "${vg_name}" "${dest_thin_lv}"
-    return ${ret}
 }
 
 CMD=$(basename "$(readlink -f "$0")")
-OPTIONS=$(getopt --name "${CMD}" --options="h" --long "dest-pool:" --long "dest-lv:" --long "help" -- "$@") || exit 1
+OPTIONS=$(getopt --name "${CMD}" --options="h" --long "dest-lv:" --long "help" -- "$@") || exit 1
 eval set -- ${OPTIONS}
 
-dest_pool_lv=""
 dest_thin_lv=""
 while true; do
     case "$1" in
     -h | --help)
-        echo "${CMD} <SNAP_DEV> --dest-pool <VG>/<POOL_LV> --dest-lv <NAME_FOR_NEW_LV>"
+        echo "${CMD} <SNAP_DEV> --dest-lv <VG>/<THIN_LV>"
         exit 0
-        ;;
-    --dest-pool)
-        dest_pool_lv="$2"
-        shift
         ;;
     --dest-lv)
         dest_thin_lv="$2"
@@ -101,16 +91,16 @@ while true; do
     shift
 done
 
-if [ -z ${dest_pool_lv} ] || [ -z ${dest_thin_lv} ] || [ $# -ne 1 ]; then
+if [ -z ${dest_thin_lv} ] || [ $# -ne 1 ]; then
     echo "One or more required arguments were not provided" >&2
     exit 1
 fi
 
 names=()
-if ! names=($(lvm_parse_display_name ${dest_pool_lv})); then
-    echo "Logical volume ${dest_pool_lv} not found" >&2
+if ! names=($(lvm_parse_display_name ${dest_thin_lv})); then
+    echo "Logical volume ${dest_thin_lv} not found" >&2
     exit 1
 fi
 
 src_dev="$1"
-migrate_thin_device "${src_dev}" "${names[0]}" "${names[1]}" "${dest_thin_lv}"
+migrate_thin_device "${src_dev}" "${names[0]}" "${names[1]}"
