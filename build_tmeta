@@ -24,6 +24,9 @@ estimate_metadata_size_for_thin() {
     if ! mapped_sectors=$(thin_get_mapped_sectors "${snap_dev}"); then
         return 1
     fi
+    if [ "${mapped_sectors}" -lt "${bs}" ]; then
+        mapped_sectors="${bs}"
+    fi
     if ! metadata_size=$(thinpool_estimate_metadata_size "${bs}" "${mapped_sectors}"); then
         return 1
     fi
