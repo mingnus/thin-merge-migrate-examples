@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source ./dm-utils.sh
+
 lvmthin_create_thin() {
     local vg_name="$1"
     local pool_lv="$2"
