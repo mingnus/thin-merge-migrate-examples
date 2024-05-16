@@ -31,7 +31,7 @@ __lvm_activate_lv() {
     shift
     local lv_name="$1"
     shift
-    lvchange -ay "${vg_name}/${lv_name}" $@ 2>/dev/null >&2
+    lvchange -ay -K "${vg_name}/${lv_name}" $@ 2>/dev/null >&2
 }
 
 lvm_activate_lv() {
