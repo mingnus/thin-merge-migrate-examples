@@ -11,7 +11,7 @@ is_devno() {
 
 dm_device_exist() {
     local dm_name="$1"
-    dmsetup info "${dm_name}" >/dev/null
+    dmsetup info "${dm_name}" >/dev/null 2>&1
 }
 
 dm_name_to_disk() {
